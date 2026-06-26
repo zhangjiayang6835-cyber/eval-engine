@@ -5,14 +5,15 @@ Analyses source code for patterns that indicate cheating: hardcoded admin
 bypasses, dangerous system calls, string-concatenated SQL, use of ``eval``/
 ``exec``, and hardcoded expected outputs.
 
-Each detector is a standalone function that returns a ``CheatSignal`` (or
-``None``) so they can be composed, tested, and extended independently.
+Each detector returns ``List[CheatSignal]``, collecting ALL matches via
+``re.finditer`` so multiple violations of the same type are all reported.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Pattern
 
@@ -47,7 +48,7 @@ class CheatSignals:
 
     Attributes:
         signals: All individual signals found.
-        malicious_code_found: ``True`` if any signal reaches severity ≥ 0.8.
+        malicious_code_found: ``True`` if any signal reaches severity >= 0.8.
         cheat_score: Aggregated score in ``[0, 1]`` (see :meth:`aggregate`).
     """
 
@@ -60,7 +61,7 @@ class CheatSignals:
         """Combine a list of signals into a single result.
 
         The aggregate cheat score is the root-mean-square (RMS) of individual
-        severities, capped at 1.0.  If any signal has severity ≥ 0.8 the
+        severities, capped at 1.0.  If any signal has severity >= 0.8 the
         submission is flagged as *malicious*.
         """
         if not signals:
@@ -104,14 +105,37 @@ def detect_all_cheat_signals(source_code: str) -> CheatSignals:
     signals: List[CheatSignal] = []
     for detector in detectors:
         try:
-            result = detector(source_code)
-            if result is not None:
-                signals.append(result)
+            results = detector(source_code)
+            if results:
+                signals.extend(results)
         except Exception:
-            # A failing detector should not break the whole pipeline.
             pass
 
     return CheatSignals.aggregate(signals)
+
+
+# ---------------------------------------------------------------------------
+# Helper — collect all matches
+# ---------------------------------------------------------------------------
+
+
+def _match_all(
+    source_code: str,
+    patterns: List[tuple[str, Pattern[str], float]],
+    signal_name: str,
+) -> List[CheatSignal]:
+    """Return all matches across all patterns for a detector category."""
+    results: List[CheatSignal] = []
+    for description, regex, severity in patterns:
+        for match in regex.finditer(source_code):
+            results.append(CheatSignal(
+                name=signal_name,
+                description=description,
+                severity=severity,
+                snippet=_line_containing(source_code, match.start()),
+                line_number=_line_number(source_code, match.start()),
+            ))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -119,205 +143,86 @@ def detect_all_cheat_signals(source_code: str) -> CheatSignals:
 # ---------------------------------------------------------------------------
 
 
-def detect_hardcoded_admin_bypass(source_code: str) -> Optional[CheatSignal]:
-    """Look for hardcoded role checks or admin bypass logic.
-
-    Patterns include: ``is_admin = True``, ``role == "admin"``, hardcoded
-    password comparisons, and ``if user == "admin"``.
-    """
-    patterns: List[tuple[str, Pattern[str], float]] = [
-        (
-            "Hardcoded admin role assignment",
-            re.compile(
-                r"(is_admin|isAdmin|admin_role|role)\s*=\s*(True|'admin'|\"admin\")",
-                re.IGNORECASE,
-            ),
-            0.75,
-        ),
-        (
-            "Hardcoded admin bypass condition",
-            re.compile(
-                r"(if|elif)\s+.*(user|name|username)\s*(==|is|!=)\s*['\"]admin['\"]",
-                re.IGNORECASE,
-            ),
-            0.8,
-        ),
-        (
-            "Hardcoded password comparison",
-            re.compile(
-                r"(password|passwd|pwd)\s*(==|!=|is not|is)\s*['\"][^'\"]{3,}['\"]",
-                re.IGNORECASE,
-            ),
-            0.6,
-        ),
-    ]
-
-    for description, regex, severity in patterns:
-        match = regex.search(source_code)
-        if match:
-            _line = _line_containing(source_code, match.start())
-            return CheatSignal(
-                name="hardcoded_admin_bypass",
-                description=description,
-                severity=severity,
-                snippet=_line,
-                line_number=_line_number(source_code, match.start()),
-            )
-    return None
+def detect_hardcoded_admin_bypass(source_code: str) -> List[CheatSignal]:
+    """Look for hardcoded role checks or admin bypass logic."""
+    return _match_all(source_code, [
+        ("Hardcoded admin role assignment",
+         re.compile(r"(is_admin|isAdmin|admin_role|role)\s*=\s*(True|'admin'|\"admin\")", re.IGNORECASE), 0.75),
+        ("Hardcoded admin bypass condition",
+         re.compile(r"(if|elif)\s+.*(user|name|username)\s*(==|is|!=)\s*['\"]admin['\"]", re.IGNORECASE), 0.8),
+        ("Hardcoded password comparison",
+         re.compile(r"(password|passwd|pwd)\s*(==|!=|is not|is)\s*['\"][^'\"]{3,}['\"]", re.IGNORECASE), 0.6),
+    ], "hardcoded_admin_bypass")
 
 
-def detect_dangerous_system_calls(source_code: str) -> Optional[CheatSignal]:
-    """Detect risky subprocess / shell invocations.
-
-    Flags use of ``subprocess``, ``os.system``, ``os.popen``, ``shutil``,
-    ``ctypes``, and ``pickle`` (deserialisation of untrusted data).
-    """
-    dangerous_patterns = {
-        r"subprocess\.(call|Popen|run|check_output|check_call)": (
-            "Direct subprocess invocation",
-            0.7,
-        ),
-        r"os\.system\s*\(": ("os.system call", 0.7),
-        r"os\.popen\s*\(": ("os.popen call", 0.7),
-        r"os\.exec(?:v|ve|l|le|lp|vpe|vp)?\s*\(": ("os.exec family call", 0.8),
-        r"ctypes\.(CDLL|cdll|windll|oledll)": ("Native code loading via ctypes", 0.85),
-        r"pickle\.(load|loads)\s*\(": ("Unsafe pickle deserialisation", 0.75),
-    }
-
-    for regex_str, (description, severity) in dangerous_patterns.items():
-        match = re.search(regex_str, source_code)
-        if match:
-            _line = _line_containing(source_code, match.start())
-            return CheatSignal(
-                name="dangerous_system_calls",
-                description=description,
-                severity=severity,
-                snippet=_line,
-                line_number=_line_number(source_code, match.start()),
-            )
-    return None
+def detect_dangerous_system_calls(source_code: str) -> List[CheatSignal]:
+    """Detect risky subprocess / shell invocations."""
+    return _match_all(source_code, [
+        (desc, re.compile(pat, re.IGNORECASE), sev)
+        for pat, (desc, sev) in {
+            r"subprocess\.(call|Popen|run|check_output|check_call)": ("Direct subprocess invocation", 0.7),
+            r"os\.system\s*\(": ("os.system call", 0.7),
+            r"os\.popen\s*\(": ("os.popen call", 0.7),
+            r"os\.exec(?:v|ve|l|le|lp|vpe|vp)?\s*\(": ("os.exec family call", 0.8),
+            r"ctypes\.(CDLL|cdll|windll|oledll)": ("Native code loading via ctypes", 0.85),
+            r"pickle\.(load|loads)\s*\(": ("Unsafe pickle deserialisation", 0.75),
+        }.items()
+    ], "dangerous_system_calls")
 
 
-def detect_suspicious_patterns(source_code: str) -> Optional[CheatSignal]:
-    """Flag obfuscated or clearly suspicious code patterns.
-
-    This includes base64-encoded strings, ``exec`` with encoded payloads,
-    ``__import__`` shenanigans, and attempts to monkey-patch builtins.
-    """
-    suspicious: List[tuple[str, Pattern[str], float]] = [
-        (
-            "Base64-encoded payload",
-            re.compile(r"base64\.(b64decode|b64encode|decodebytes)"),
-            0.6,
-        ),
-        (
-            "Dynamic __import__ with string argument",
-            re.compile(r"__import__\s*\(\s*['\"]"),
-            0.65,
-        ),
-        (
-            "Built-in monkey-patching attempt",
-            re.compile(
-                r"(__builtins__|builtins)\s*\.\s*\w+\s*=\s*",
-                re.IGNORECASE,
-            ),
-            0.7,
-        ),
-        (
-            "Suspicious getattr / setattr on builtins",
-            re.compile(
-                r"(getattr|setattr)\s*\(\s*(__builtins__|builtins)",
-                re.IGNORECASE,
-            ),
-            0.7,
-        ),
-        (
-            "Potential code obfuscation — hex/oct strings evaluated",
-            re.compile(r"""['\"][\\]x[0-9a-fA-F]{2}['\"]"""),
-            0.5,
-        ),
-    ]
-
-    for description, regex, severity in suspicious:
-        match = regex.search(source_code)
-        if match:
-            _line = _line_containing(source_code, match.start())
-            return CheatSignal(
-                name="suspicious_patterns",
-                description=description,
-                severity=severity,
-                snippet=_line,
-                line_number=_line_number(source_code, match.start()),
-            )
-    return None
+def detect_suspicious_patterns(source_code: str) -> List[CheatSignal]:
+    """Flag obfuscated or clearly suspicious code patterns."""
+    return _match_all(source_code, [
+        ("Base64-encoded payload", re.compile(r"base64\.(b64decode|b64encode|decodebytes)"), 0.6),
+        ("Dynamic __import__ with string argument", re.compile(r"__import__\s*\(\s*['\"]"), 0.65),
+        ("Built-in monkey-patching attempt", re.compile(r"(__builtins__|builtins)\s*\.\s*\w+\s*=\s*", re.IGNORECASE), 0.7),
+        ("Suspicious getattr / setattr on builtins", re.compile(r"(getattr|setattr)\s*\(\s*(__builtins__|builtins)", re.IGNORECASE), 0.7),
+        ("Potential code obfuscation - hex/oct strings evaluated", re.compile(r"""['\"][\\]x[0-9a-fA-F]{2}['\"]"""), 0.5),
+    ], "suspicious_patterns")
 
 
-def detect_eval_exec(source_code: str) -> Optional[CheatSignal]:
-    """Detect use of ``eval`` / ``exec`` with user-controlled data.
-
-    A bare ``eval`` or ``exec`` on a literal string is suspicious; one that
-    references a parameter or stdin is considered a cheat attempt.
-    """
-    # We use the AST to distinguish calls from variable references.
+def detect_eval_exec(source_code: str) -> List[CheatSignal]:
+    """Detect use of ``eval`` / ``exec`` with user-controlled data."""
     try:
-        tree = ast.parse(source_code)
-    except SyntaxError:
-        # Fall back to regex for syntactically invalid snippets.
-        return _eval_exec_regex_fallback(source_code)
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(500)
+        try:
+            tree = ast.parse(source_code)
+        finally:
+            sys.setrecursionlimit(old_limit)
+    except (SyntaxError, RecursionError):
+        fallback = _eval_exec_regex_fallback(source_code)
+        return [fallback] if fallback else []
 
     visitor = _EvalExecVisitor(source_code)
     visitor.visit(tree)
-    if visitor.found:
-        return CheatSignal(
-            name="eval_exec_detection",
-            description="Code uses eval() or exec() with dynamic input",
-            severity=0.8,
-            snippet=visitor.snippet,
-            line_number=visitor.line_number,
-        )
-    return None
+    if visitor.results:
+        return visitor.results
+    return []
 
 
-def detect_hardcoded_expected_output(source_code: str) -> Optional[CheatSignal]:
-    """Flag submissions that contain the expected answer verbatim.
+def detect_hardcoded_expected_output(source_code: str) -> List[CheatSignal]:
+    """Flag submissions that contain the expected answer verbatim."""
+    return _match_all(source_code, [
+        ("Hardcoded expected output in comment", re.compile(r"#\s*(expected|answer|result)\s*[:=]\s*.+", re.IGNORECASE), 0.7),
+        ("Hardcoded answer variable", re.compile(r"(expected_output|EXPECTED_OUTPUT|correct_answer|CORRECT_OUTPUT)\s*=", re.IGNORECASE), 0.65),
+        ("Hardcoded output via print of constant", re.compile(r"""print\s*\(\s*['\"]{3}.+['\"]{3}\s*\)""", re.DOTALL), 0.5),
+    ], "hardcoded_expected_output")
 
-    Looks for comments like ``# expected: ...`` or ``EXPECTED_OUTPUT = ...``
-    or a string that looks like a pre-computed answer (e.g. a long hex hash
-    or a numeric constant assigned to ``answer`` / ``result``).
-    """
-    patterns: List[tuple[str, Pattern[str], float]] = [
-        (
-            "Hardcoded expected output in comment",
-            re.compile(r"#\s*(expected|answer|result)\s*[:=]\s*.+", re.IGNORECASE),
-            0.7,
-        ),
-        (
-            "Hardcoded answer variable",
-            re.compile(
-                r"(expected_output|EXPECTED_OUTPUT|correct_answer|CORRECT_OUTPUT)\s*=",
-                re.IGNORECASE,
-            ),
-            0.65,
-        ),
-        (
-            "Hardcoded output via print of constant",
-            re.compile(r"""print\s*\(\s*['\"]{3}.+['\"]{3}\s*\)""", re.DOTALL),
-            0.5,
-        ),
-    ]
 
-    for description, regex, severity in patterns:
-        match = regex.search(source_code)
-        if match:
-            _line = _line_containing(source_code, match.start())
-            return CheatSignal(
-                name="hardcoded_expected_output",
-                description=description,
-                severity=severity,
-                snippet=_line,
-                line_number=_line_number(source_code, match.start()),
-            )
-    return None
+def detect_sql_injection(source_code: str) -> List[CheatSignal]:
+    """Detect SQL injection via string concatenation or f-strings."""
+    return _match_all(source_code, [
+        ("SQL injection via string concatenation",
+         re.compile(r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
+                    r"""[^;]*\+\s*[a-zA-Z_]""", re.IGNORECASE), 0.8),
+        ("SQL injection via f-string",
+         re.compile(r"""[fF]\s*['\"]"""
+                    r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE).*\{.*\}""", re.IGNORECASE), 0.85),
+        ("SQL injection via % formatting",
+         re.compile(r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
+                    r"""[^;]*%\s*\(\s*[a-zA-Z_]""", re.IGNORECASE), 0.75),
+    ], "sql_injection")
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +235,7 @@ class _EvalExecVisitor(ast.NodeVisitor):
 
     def __init__(self, source_code: str) -> None:
         self.source_code = source_code
-        self.found = False
-        self.snippet: Optional[str] = None
-        self.line_number: Optional[int] = None
+        self.results: List[CheatSignal] = []
 
     def visit_Call(self, node: ast.Call) -> None:
         func_name = None
@@ -342,9 +245,14 @@ class _EvalExecVisitor(ast.NodeVisitor):
             func_name = node.func.attr
 
         if func_name in ("eval", "exec"):
-            self.found = True
-            self.line_number = getattr(node, "lineno", None)
-            self.snippet = ast.get_source_segment(self.source_code, node)
+            snippet = ast.get_source_segment(self.source_code, node)
+            self.results.append(CheatSignal(
+                name="eval_exec_detection",
+                description=f"Code uses {func_name}() with dynamic input",
+                severity=0.8,
+                snippet=snippet,
+                line_number=getattr(node, "lineno", None),
+            ))
         self.generic_visit(node)
 
 
@@ -364,56 +272,6 @@ def _eval_exec_regex_fallback(source_code: str) -> Optional[CheatSignal]:
             snippet=match.group(),
             line_number=_line_number(source_code, match.start()),
         )
-    return None
-
-
-def detect_sql_injection(source_code: str) -> Optional[CheatSignal]:
-    """Detect SQL injection via string concatenation or f-strings.
-
-    Flags patterns like ``"SELECT * FROM users WHERE id = " + user_id``
-    or f-strings with SQL queries, which indicate SQL injection risk.
-    """
-    patterns: List[tuple[str, Pattern[str], float]] = [
-        (
-            "SQL injection via string concatenation",
-            re.compile(
-                r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
-                r"""[^;]*\+\s*(user_|request|input|data|payload|get|param)""",
-                re.IGNORECASE,
-            ),
-            0.8,
-        ),
-        (
-            "SQL injection via f-string",
-            re.compile(
-                r"""[fF]\s*['\"]"""
-                r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE).*\{.*\}""",
-                re.IGNORECASE,
-            ),
-            0.85,
-        ),
-        (
-            "SQL injection via % formatting",
-            re.compile(
-                r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
-                r"""[^;]*%\s*\(\s*(user_|request|input|data|payload)""",
-                re.IGNORECASE,
-            ),
-            0.75,
-        ),
-    ]
-
-    for description, regex, severity in patterns:
-        match = regex.search(source_code)
-        if match:
-            _line = _line_containing(source_code, match.start())
-            return CheatSignal(
-                name="sql_injection",
-                description=description,
-                severity=severity,
-                snippet=_line,
-                line_number=_line_number(source_code, match.start()),
-            )
     return None
 
 
