@@ -1,0 +1,56 @@
+# GitHub Actions CI — eval-engine
+#
+# Runs tests on push/PR. Builds Docker sandbox image on main branch.
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "Test (Python ${{ matrix.python }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+  docker:
+    name: Build Docker sandbox
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t eval-sandbox:latest .
