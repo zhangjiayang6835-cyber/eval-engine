@@ -98,6 +98,7 @@ def detect_all_cheat_signals(source_code: str) -> CheatSignals:
         detect_suspicious_patterns,
         detect_eval_exec,
         detect_hardcoded_expected_output,
+        detect_sql_injection,
     ]
 
     signals: List[CheatSignal] = []
@@ -178,7 +179,7 @@ def detect_dangerous_system_calls(source_code: str) -> Optional[CheatSignal]:
         ),
         r"os\.system\s*\(": ("os.system call", 0.7),
         r"os\.popen\s*\(": ("os.popen call", 0.7),
-        r"os\.execv|[ept]?": ("os.exec family call", 0.8),
+        r"os\.exec(?:v|ve|l|le|lp|vpe|vp)?\s*\(": ("os.exec family call", 0.8),
         r"ctypes\.(CDLL|cdll|windll|oledll)": ("Native code loading via ctypes", 0.85),
         r"pickle\.(load|loads)\s*\(": ("Unsafe pickle deserialisation", 0.75),
     }
@@ -264,7 +265,7 @@ def detect_eval_exec(source_code: str) -> Optional[CheatSignal]:
         # Fall back to regex for syntactically invalid snippets.
         return _eval_exec_regex_fallback(source_code)
 
-    visitor = _EvalExecVisitor()
+    visitor = _EvalExecVisitor(source_code)
     visitor.visit(tree)
     if visitor.found:
         return CheatSignal(
@@ -327,7 +328,8 @@ def detect_hardcoded_expected_output(source_code: str) -> Optional[CheatSignal]:
 class _EvalExecVisitor(ast.NodeVisitor):
     """AST visitor that flags ``eval`` and ``exec`` calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, source_code: str) -> None:
+        self.source_code = source_code
         self.found = False
         self.snippet: Optional[str] = None
         self.line_number: Optional[int] = None
@@ -342,7 +344,7 @@ class _EvalExecVisitor(ast.NodeVisitor):
         if func_name in ("eval", "exec"):
             self.found = True
             self.line_number = getattr(node, "lineno", None)
-            self.snippet = ast.get_source_segment(source_code, node)  # type: ignore[arg-type]
+            self.snippet = ast.get_source_segment(self.source_code, node)
         self.generic_visit(node)
 
 
@@ -362,6 +364,56 @@ def _eval_exec_regex_fallback(source_code: str) -> Optional[CheatSignal]:
             snippet=match.group(),
             line_number=_line_number(source_code, match.start()),
         )
+    return None
+
+
+def detect_sql_injection(source_code: str) -> Optional[CheatSignal]:
+    """Detect SQL injection via string concatenation or f-strings.
+
+    Flags patterns like ``"SELECT * FROM users WHERE id = " + user_id``
+    or f-strings with SQL queries, which indicate SQL injection risk.
+    """
+    patterns: List[tuple[str, Pattern[str], float]] = [
+        (
+            "SQL injection via string concatenation",
+            re.compile(
+                r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
+                r"""[^;]*\+\s*(user_|request|input|data|payload|get|param)""",
+                re.IGNORECASE,
+            ),
+            0.8,
+        ),
+        (
+            "SQL injection via f-string",
+            re.compile(
+                r"""[fF]\s*['\"]"""
+                r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE).*\{.*\}""",
+                re.IGNORECASE,
+            ),
+            0.85,
+        ),
+        (
+            "SQL injection via % formatting",
+            re.compile(
+                r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
+                r"""[^;]*%\s*\(\s*(user_|request|input|data|payload)""",
+                re.IGNORECASE,
+            ),
+            0.75,
+        ),
+    ]
+
+    for description, regex, severity in patterns:
+        match = regex.search(source_code)
+        if match:
+            _line = _line_containing(source_code, match.start())
+            return CheatSignal(
+                name="sql_injection",
+                description=description,
+                severity=severity,
+                snippet=_line,
+                line_number=_line_number(source_code, match.start()),
+            )
     return None
 
 
