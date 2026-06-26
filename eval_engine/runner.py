@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import socket
 import tarfile
 import tempfile
 import time
@@ -148,6 +149,8 @@ class DockerSandboxRunner:
                 working_dir="/app",
                 mem_limit=f"{task.evaluation.memory_mb}m",
                 memswap_limit=f"{task.evaluation.memory_mb}m",  # no swap
+                cpu_period=100000,
+                cpu_quota=100000,  # 1 CPU core
                 network_disabled=self.network_disabled,
                 read_only=True,
                 environment=environment or {},
@@ -172,8 +175,15 @@ class DockerSandboxRunner:
             # Container exited with non-zero code — still capture output.
             exit_data = {"StatusCode": exc.exit_status}
             timed_out = False
+        except docker.errors.APIError as exc:
+            # Docker daemon error — still capture exit status.
+            timed_out = False
+            exit_data = {"StatusCode": exc.exit_status if hasattr(exc, 'exit_status') else -1}
+        except socket.timeout:
+            timed_out = True
+            exit_data = {"StatusCode": -1}
         except Exception:
-            # Timeout or other fatal error.
+            # All other errors treated as timeout.
             timed_out = True
             exit_data = {"StatusCode": -1}
 
@@ -225,9 +235,7 @@ class DockerSandboxRunner:
 
         Returns ``(script_name, script_content)``.
         """
-        # For now we assume Python submissions.  The architecture is
-        # language-agnostic — switch on *languages* to generate the right
-        # wrapper for Node / Go / etc.
+        # Currently supports Python. Extend here for Node/Go/other languages.
         script = "runner.py"
         imports = "\n".join(
             "import sys, json, os, subprocess, time, math, random"
