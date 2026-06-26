@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eval-engine"
+version = "0.1.0"
+description = "Docker-sandboxed code evaluation engine with cheat detection"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Eval Engine Team"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Security",
+]
+dependencies = [
+    "PyYAML>=6.0",
+    "docker>=6.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["eval_engine"]
+include = ["eval_engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "docker: needs a running Docker daemon",
+]
+addopts = "-v --tb=short -p no:cacheprovider"
