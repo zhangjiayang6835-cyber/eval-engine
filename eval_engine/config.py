@@ -113,7 +113,7 @@ class TaskConfig:
             difficulty=_required_str(d, "difficulty"),
             source=_required_str(d, "source"),
             languages=list(d.get("languages", [])),
-            test_cases_path=_required_str(d, "test_cases_path"),
+            test_cases_path=str(d.get("test_cases_path", "")),
             evaluation=evaluation,
             tags=list(d.get("tags", [])),
             reward_virtual=int(d.get("reward_virtual", 0)),
