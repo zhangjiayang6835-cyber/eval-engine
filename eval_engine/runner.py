@@ -274,6 +274,8 @@ class DockerSandboxRunner:
                 result: List[Tuple[str, bytes]] = []
                 for item in items:
                     p = item.get("path", f"test_{len(result)}.txt")
+                    p = p.replace("\\", "/")
+                    if ".." in p.split("/") or p.startswith("/"): p = f"safe_{len(result)}.txt"
                     c = item.get("content", "")
                     result.append((p, c.encode("utf-8")))
                 return result

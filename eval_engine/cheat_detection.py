@@ -378,7 +378,7 @@ def detect_sql_injection(source_code: str) -> Optional[CheatSignal]:
             "SQL injection via string concatenation",
             re.compile(
                 r"""(SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE)"""
-                r"""[^;]*\+\s*(user_|request|input|data|payload|get|param)""",
+                r"""[^;]*\+\s*[a-zA-Z_]""",
                 re.IGNORECASE,
             ),
             0.8,
