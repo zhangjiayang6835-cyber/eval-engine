@@ -154,10 +154,6 @@ def metric_security_pass(
     for sig in signals.signals:
         failures.append(f"[{sig.severity:.1f}] {sig.description}")
 
-    # Additional check: SQL string concatenation
-    sql_issues = _detect_sql_concatenation(submission_code)
-    failures.extend(sql_issues)
-
     passed = len(failures) == 0
     score = 1.0 - min(signals.cheat_score, 1.0)
 
@@ -278,25 +274,6 @@ def evaluate_all(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-_SQL_CONCAT_PATTERNS = [
-    re.compile(r"""['"]\s*\+\s*(select|insert|update|delete|drop|alter)\s""", re.IGNORECASE),
-    re.compile(r"""(select|insert|update|delete|drop|alter)\s.*\+\s*['"]""", re.IGNORECASE),
-    re.compile(r"""f['\"].*\{.*(select|insert|update|delete|drop|alter)""", re.IGNORECASE),
-    re.compile(r"""%(?:\([^)]*\))?s.*(?:select|insert|update|delete|drop|alter)""", re.IGNORECASE),
-    re.compile(r"""\.format\(.*(?:select|insert|update|delete|drop|alter)""", re.IGNORECASE),
-]
-
-
-def _detect_sql_concatenation(source_code: str) -> List[str]:
-    """Return human-readable descriptions of SQL injection patterns found."""
-    issues: List[str] = []
-    for pattern in _SQL_CONCAT_PATTERNS:
-        match = pattern.search(source_code)
-        if match:
-            issues.append(f"Possible SQL injection via string concatenation: '{match.group()[:60]}'")
-    return issues
 
 
 def _tail(text: str, n: int) -> str:

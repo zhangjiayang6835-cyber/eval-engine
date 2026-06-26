@@ -36,7 +36,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["eval_engine"]
+where = ["."]
 include = ["eval_engine*"]
 
 [tool.pytest.ini_options]
